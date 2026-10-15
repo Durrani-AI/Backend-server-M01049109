@@ -13,4 +13,7 @@ app.listen(3000, function() {
     app.use(function(request, response) {
         console.log("In comes a request to: " + request.url);
     
-});
+}
+    )
+})
+        
