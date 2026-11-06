@@ -7,12 +7,15 @@
 //   3. update a lesson           (PUT /lessons/:_id)
 //   4. load lesson pictures      (/images/...)
 // The lessons and orders are stored in a MongoDB Atlas database.
+// The server can run on your own computer (localhost) OR online on Render.
 // ============================================================
 
 // --------------------- 1. LOAD THE TOOLS WE NEED ---------------------
 
 // Load the "dotenv" library and tell it to read our secret values from config.env.
 // After this line, every value in config.env is available as process.env.NAME.
+// On Render there is NO config.env file (it is not on GitHub). Instead, Render gives
+// the same values to process.env from its "Environment Variables" settings page.
 require("dotenv").config({ path: "./config.env" });
 // Load the Express library. Express makes it easy to build a web server in Node.js.
 var express = require("express");
@@ -29,16 +32,20 @@ const { MongoClient, ObjectId } = require("mongodb");
 // Create our actual server app. "app" is the object we use to set up everything below.
 var app = express();
 
+// The port (door number) the server listens on.
+// Render picks its own port and passes it in process.env.PORT.
+// On our own computer there is no PORT value, so we fall back to 3000.
+// ("||" means "use the left value, but if it's empty use the right one".)
+const PORT = process.env.PORT || 3000;
+
 // --------------------- 2. CONNECT TO THE DATABASE ---------------------
 
 // Build the full connection string by joining the parts from config.env together.
 // Result looks like: mongodb+srv://username:password@cluster.xxxxx.mongodb.net/
 const uri = process.env.MONGODB_PREFIX + process.env.MONGODB_USERNAME + ":" + process.env.MONGODB_PASSWORD + process.env.MONGODB_URL;
-// Create a client (a "connection object") using that address.
-// It connects automatically the first time we ask the database for something.
+// Create a client (a "connection object") using that address. It does not connect yet.
 const client = new MongoClient(uri);
 // Choose which database (inside our cluster) we want to use.
-// CHANGE "DatabaseName" to the exact name of your database in Atlas.
 const db = client.db("SchoolActivities");
 
 // --------------------- 3. MIDDLEWARE (runs on every request) ---------------------
@@ -53,6 +60,7 @@ app.use(express.json());
 
 // Logger middleware
 // This runs for EVERY request and prints it in the terminal, so we can see what is happening.
+// On Render, these messages appear in the "Logs" tab of your service.
 app.use(function(request, response, next) {
     // Print the type of request (GET, POST, etc.) and the address that was asked for.
     // Example output: "GET request to: /lessons"
@@ -76,17 +84,35 @@ app.use("/images", function(request, response) {
 // --------------------- 4. ROUTES (the server's "menu") ---------------------
 // A "route" = an address + request type that the server knows how to answer.
 // The route functions are "async" so we can use "await" to wait for the database to reply.
+// Each route uses "try / catch": if the database fails, we send back an error (status 500)
+// instead of leaving the front end waiting forever with no answer.
+
+// GET /
+// The home address. Visiting the server's main link shows this message,
+// so we (and Render) can quickly check the server is up and running.
+app.get("/", function(request, response) {
+    // Send a short text message back.
+    response.send("Backend server is running. Try /lessons to see the lessons.");
+}); // End of the GET / route.
 
 // GET /lessons
 // When the front end asks for "/lessons" using GET (i.e. "give me data"), this function runs.
 app.get("/lessons", async function(request, response) {
-    // Pick the "lessons" collection (like a table) from the database.
-    let collection = await db.collection("lessons");
-    // find({}) = find ALL documents (the empty {} means "no filter").
-    // toArray() turns the results into a normal JavaScript array.
-    let results = await collection.find({}).toArray();
-    // Send the lessons back to the front end. MongoDB data is already JSON-friendly.
-    response.send(results);
+    // Try to get the lessons from the database.
+    try {
+        // Pick the "lessons" collection (like a table) from the database.
+        let collection = db.collection("lessons");
+        // find({}) = find ALL documents (the empty {} means "no filter").
+        // toArray() turns the results into a normal JavaScript array.
+        let results = await collection.find({}).toArray();
+        // Send the lessons back to the front end. MongoDB data is already JSON-friendly.
+        response.send(results);
+    } catch (err) {
+        // Something went wrong with the database. Print the error for us to see.
+        console.error("Error getting lessons:", err);
+        // Tell the front end it failed. 500 = "something went wrong on the server".
+        response.status(500).send({ error: "Could not get lessons" });
+    }
 }); // End of the GET /lessons route.
 
 // POST /orders
@@ -94,14 +120,27 @@ app.get("/lessons", async function(request, response) {
 app.post("/orders", async function(request, response) {
     // request.body holds the order the front end sent (name, phone, and the lesson IDs in the cart).
     var body = request.body;
-    // Print the order details in the terminal so we can see what arrived.
-    console.log("New order received:", body);
-    // Pick the "orders" collection from the database.
-    let collection = await db.collection("orders");
-    // Save the order as one new document in the collection.
-    let result = await collection.insertOne(body);
-    // Reply to the front end with the result (it includes the new order's _id).
-    response.send(result);
+    // Simple safety check: if the order is empty (nothing was sent), don't save it.
+    // Object.keys(body).length counts how many fields the order has.
+    if (!body || Object.keys(body).length === 0) {
+        // 400 = "bad request" - the front end sent something wrong. "return" stops the function here.
+        return response.status(400).send({ error: "Order is empty" });
+    }
+    // Try to save the order in the database.
+    try {
+        // Print the order details in the terminal so we can see what arrived.
+        console.log("New order received:", body);
+        // Pick the "orders" collection from the database.
+        let collection = db.collection("orders");
+        // Save the order as one new document in the collection.
+        let result = await collection.insertOne(body);
+        // Reply to the front end with the result (it includes the new order's _id).
+        response.send(result);
+    } catch (err) {
+        // Saving failed. Print the error and tell the front end.
+        console.error("Error saving order:", err);
+        response.status(500).send({ error: "Could not save order" });
+    }
 }); // End of the POST /orders route.
 
 // PUT /lessons/:_id
@@ -110,24 +149,38 @@ app.post("/orders", async function(request, response) {
 app.put("/lessons/:_id", async function(request, response) {
     // request.body holds the fields to change, e.g. { "availability": 4 }
     var body = request.body;
-    // Pick the "lessons" collection from the database.
-    let collection = await db.collection("lessons");
     // Grab the id from the address (the part after /lessons/).
     let tempid = request.params._id;
 
-    // The "query" says WHICH lesson to update: the one whose _id matches.
-    // new ObjectId(...) converts the text id into MongoDB's _id type so they can match.
-    const query = { _id: new ObjectId(tempid) };
-    // The "updates" say WHAT to change. $set only changes the fields we send, the rest stay the same.
-    const updates = {
-        $set: body
-    };
-    // Apply the update to the one matching lesson and wait for the database to finish.
-    let result = await collection.updateOne(query, updates);
-    // Send the result back (it says how many lessons were matched and changed).
-    response.send(result);
-    // Also print the result in the terminal.
-    console.log(result);
+    // Check the id is in the correct MongoDB format (24 letters/numbers).
+    // If not, new ObjectId() below would crash, so we reply with an error instead.
+    if (!ObjectId.isValid(tempid)) {
+        // 400 = "bad request". "return" stops the function here.
+        return response.status(400).send({ error: "Invalid lesson id" });
+    }
+
+    // Try to update the lesson in the database.
+    try {
+        // Pick the "lessons" collection from the database.
+        let collection = db.collection("lessons");
+        // The "query" says WHICH lesson to update: the one whose _id matches.
+        // new ObjectId(...) converts the text id into MongoDB's _id type so they can match.
+        const query = { _id: new ObjectId(tempid) };
+        // The "updates" say WHAT to change. $set only changes the fields we send, the rest stay the same.
+        const updates = {
+            $set: body
+        };
+        // Apply the update to the one matching lesson and wait for the database to finish.
+        let result = await collection.updateOne(query, updates);
+        // Send the result back (it says how many lessons were matched and changed).
+        response.send(result);
+        // Also print the result in the terminal.
+        console.log(result);
+    } catch (err) {
+        // Updating failed. Print the error and tell the front end.
+        console.error("Error updating lesson:", err);
+        response.status(500).send({ error: "Could not update lesson" });
+    }
 }); // End of the PUT /lessons route.
 
 // --------------------- 5. CATCH-ALL ERROR ---------------------
@@ -142,9 +195,27 @@ app.use(function(request, response) {
 
 // --------------------- 6. START THE SERVER ---------------------
 
-// Start the server and make it listen for requests on port 3000.
-// (A port is like a door number on the computer. Visit http://localhost:3000 to reach it.)
-app.listen(3000, function() {
-    // This runs once the server has started successfully, to let us know it's working.
-    console.log("App started on port 3000");
-}); // End of app.listen - the server now keeps running and waiting for requests.
+// An async function that connects to the database FIRST, then starts the server.
+// Doing it in this order means we find out straight away if the database details are wrong.
+async function startServer() {
+    // Try to connect to MongoDB.
+    try {
+        // Connect to the database and wait until it is done.
+        await client.connect();
+        // Let us know the connection worked.
+        console.log("Connected to MongoDB");
+    } catch (err) {
+        // The connection failed (e.g. wrong password, or Atlas is blocking Render's address).
+        // Print why, so we can fix it. The server still starts below and will try again on each request.
+        console.error("Could not connect to MongoDB:", err.message);
+    }
+    // Start the server and make it listen for requests on PORT (3000 locally, Render's port online).
+    // (A port is like a door number on the computer. Locally, visit http://localhost:3000 to reach it.)
+    app.listen(PORT, function() {
+        // This runs once the server has started successfully, to let us know it's working.
+        console.log("App started on port " + PORT);
+    }); // End of app.listen - the server now keeps running and waiting for requests.
+} // End of startServer.
+
+// Run the function above to connect to the database and start the server.
+startServer();
