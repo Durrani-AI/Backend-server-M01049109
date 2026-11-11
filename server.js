@@ -3,14 +3,17 @@
 // This file creates a small web server using Express.
 // The front end (the website) talks to this server to:
 //   1. get the list of lessons   (GET /lessons)
-//   2. send a new order          (POST /orders)
-//   3. update a lesson           (PUT /lessons/:_id)
-//   4. load lesson pictures      (/images/...)
+//   2. search for lessons        (GET /search?q=...)
+//   3. send a new order          (POST /orders)
+//   4. update a lesson           (PUT /lessons/:_id)
+//   5. load lesson pictures      (/images/...)
 // The lessons and orders are stored in a MongoDB Atlas database.
 // The server can run on your own computer (localhost) OR online on Render.
 // ============================================================
 
 // --------------------- 1. LOAD THE TOOLS WE NEED ---------------------
+// We use "const" for every variable in this file. "const" means the variable
+// always points to the same thing once it is created (it is never reassigned).
 
 // Load the "dotenv" library and tell it to read our secret values from config.env.
 // After this line, every value in config.env is available as process.env.NAME.
@@ -18,19 +21,19 @@
 // the same values to process.env from its "Environment Variables" settings page.
 require("dotenv").config({ path: "./config.env" });
 // Load the Express library. Express makes it easy to build a web server in Node.js.
-var express = require("express");
+const express = require("express");
 // Load the CORS library. CORS lets a website on a DIFFERENT address (e.g. GitHub Pages)
 // talk to this server. Without it, the browser would block those requests for safety.
-var cors = require("cors");
+const cors = require("cors");
 // Load Node's built-in "path" tool. It helps us build file/folder paths safely
 // (it handles "/" vs "\" differences between Mac/Linux and Windows for us).
-var path = require("path");
+const path = require("path");
 // Load two tools from the "mongodb" library:
 //   MongoClient = the object that talks to the database.
 //   ObjectId    = turns a text id (e.g. "65a1...") into MongoDB's special _id type.
 const { MongoClient, ObjectId } = require("mongodb");
 // Create our actual server app. "app" is the object we use to set up everything below.
-var app = express();
+const app = express();
 
 // The port (door number) the server listens on.
 // Render picks its own port and passes it in process.env.PORT.
@@ -73,7 +76,7 @@ app.use(function(request, response, next) {
 // Static file middleware for lesson images
 // If a request starts with "/images", look for the file inside the "images" folder and send it back.
 // __dirname = the folder this server.js file is in. path.join sticks it together with "images".
-// Example: a request to /images/maths.png sends back the file images/maths.png
+// Example: a request to /images/English.png sends back the file images/English.png
 app.use("/images", express.static(path.join(__dirname, "images")));
 // If the image was NOT found in the folder above, the request falls through to here.
 app.use("/images", function(request, response) {
@@ -101,10 +104,10 @@ app.get("/lessons", async function(request, response) {
     // Try to get the lessons from the database.
     try {
         // Pick the "lessons" collection (like a table) from the database.
-        let collection = db.collection("lessons");
+        const collection = db.collection("lessons");
         // find({}) = find ALL documents (the empty {} means "no filter").
         // toArray() turns the results into a normal JavaScript array.
-        let results = await collection.find({}).toArray();
+        const results = await collection.find({}).toArray();
         // Send the lessons back to the front end. MongoDB data is already JSON-friendly.
         response.send(results);
     } catch (err) {
@@ -115,11 +118,54 @@ app.get("/lessons", async function(request, response) {
     }
 }); // End of the GET /lessons route.
 
+// GET /search
+// Searches lessons in MongoDB as the user types in the search box (e.g. /search?q=math).
+// Matches if the search text appears in the subject, location, price, or availability.
+app.get("/search", async function(request, response) {
+    // Get the search word from the URL query (?q=...). If nothing was sent, use an empty string.
+    // trim() removes any spaces at the start and end.
+    const queryText = String(request.query.q || "").trim();
+    // Try to search the lessons collection in MongoDB.
+    try {
+        // Pick the "lessons" collection from the database.
+        const collection = db.collection("lessons");
+        // If the search box is empty, return all lessons.
+        if (queryText === "") {
+            const allLessons = await collection.find({}).toArray();
+            return response.send(allLessons);
+        }
+        // Some characters (like + ( ) . *) have a special meaning in a search pattern.
+        // This line puts a "\" in front of them, so they are treated as normal text.
+        // Without it, typing "(" would cause an error and "." would match every letter.
+        const safeText = queryText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        // Build a search pattern from the text. "i" = ignore capital/small letters ("MATH" = "math").
+        const regex = new RegExp(safeText, "i");
+        // Build the list of fields to match: subject, location, or price.
+        const orConditions = [
+            { subject: regex },
+            { location: regex },
+            { price: regex }
+        ];
+        // If the user typed a number (e.g. "5"), also match lessons with that exact availability.
+        if (!isNaN(Number(queryText))) {
+            orConditions.push({ availability: Number(queryText) });
+        }
+        // Find all lessons that match ANY ($or) of the conditions above.
+        const results = await collection.find({ $or: orConditions }).toArray();
+        // Send the matching lessons back to the front end.
+        response.send(results);
+    } catch (err) {
+        // Something went wrong with the search. Print the error and send back status 500.
+        console.error("Error searching lessons:", err);
+        response.status(500).send({ error: "Could not search lessons" });
+    }
+}); // End of the GET /search route.
+
 // POST /orders
 // When the front end SENDS an order to "/orders" using POST (i.e. "here is some data"), this runs.
 app.post("/orders", async function(request, response) {
     // request.body holds the order the front end sent (name, phone, and the lesson IDs in the cart).
-    var body = request.body;
+    const body = request.body;
     // Simple safety check: if the order is empty (nothing was sent), don't save it.
     // Object.keys(body).length counts how many fields the order has.
     if (!body || Object.keys(body).length === 0) {
@@ -131,9 +177,9 @@ app.post("/orders", async function(request, response) {
         // Print the order details in the terminal so we can see what arrived.
         console.log("New order received:", body);
         // Pick the "orders" collection from the database.
-        let collection = db.collection("orders");
+        const collection = db.collection("orders");
         // Save the order as one new document in the collection.
-        let result = await collection.insertOne(body);
+        const result = await collection.insertOne(body);
         // Reply to the front end with the result (it includes the new order's _id).
         response.send(result);
     } catch (err) {
@@ -148,9 +194,9 @@ app.post("/orders", async function(request, response) {
 // ":_id" is a placeholder - e.g. a request to /lessons/65a1b2c3... puts "65a1b2c3..." in request.params._id
 app.put("/lessons/:_id", async function(request, response) {
     // request.body holds the fields to change, e.g. { "availability": 4 }
-    var body = request.body;
+    const body = request.body;
     // Grab the id from the address (the part after /lessons/).
-    let tempid = request.params._id;
+    const tempid = request.params._id;
 
     // Check the id is in the correct MongoDB format (24 letters/numbers).
     // If not, new ObjectId() below would crash, so we reply with an error instead.
@@ -162,7 +208,7 @@ app.put("/lessons/:_id", async function(request, response) {
     // Try to update the lesson in the database.
     try {
         // Pick the "lessons" collection from the database.
-        let collection = db.collection("lessons");
+        const collection = db.collection("lessons");
         // The "query" says WHICH lesson to update: the one whose _id matches.
         // new ObjectId(...) converts the text id into MongoDB's _id type so they can match.
         const query = { _id: new ObjectId(tempid) };
@@ -171,7 +217,7 @@ app.put("/lessons/:_id", async function(request, response) {
             $set: body
         };
         // Apply the update to the one matching lesson and wait for the database to finish.
-        let result = await collection.updateOne(query, updates);
+        const result = await collection.updateOne(query, updates);
         // Send the result back (it says how many lessons were matched and changed).
         response.send(result);
         // Also print the result in the terminal.
@@ -206,7 +252,8 @@ async function startServer() {
         console.log("Connected to MongoDB");
     } catch (err) {
         // The connection failed (e.g. wrong password, or Atlas is blocking Render's address).
-        // Print why, so we can fix it. The server still starts below and will try again on each request.
+        // Print why, so we can fix it. The server still starts below. Each database route
+        // will try to connect again, and reply with an error (status 500) if it still fails.
         console.error("Could not connect to MongoDB:", err.message);
     }
     // Start the server and make it listen for requests on PORT (3000 locally, Render's port online).
