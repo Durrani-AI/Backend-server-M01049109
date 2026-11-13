@@ -2,11 +2,12 @@
 // server.js - the backend (server side) of the lessons web app
 // This file creates a small web server using Express.
 // The front end (the website) talks to this server to:
-//   1. get the list of lessons   (GET /lessons)
-//   2. search for lessons        (GET /search?q=...)
-//   3. send a new order          (POST /orders)
-//   4. update a lesson           (PUT /lessons/:_id)
-//   5. load lesson pictures      (/images/...)
+//   1. get the list of lessons       (GET /lessons)
+//   2. search for lessons            (GET /search?q=...)
+//   3. send a new order              (POST /orders)
+//   4. update a lesson               (PUT /lessons/:_id)
+//   5. get enrolment for a lesson    (GET /enrolment/:lessonid)
+//   6. load lesson pictures          (/images/...)
 // The lessons and orders are stored in a MongoDB Atlas database.
 // The server can run on your own computer (localhost) OR online on Render.
 // ============================================================
@@ -172,6 +173,11 @@ app.post("/orders", async function(request, response) {
         // 400 = "bad request" - the front end sent something wrong. "return" stops the function here.
         return response.status(400).send({ error: "Order is empty" });
     }
+    // If the order has a list of lessonIDs, also record "spaces" (how many total spaces were ordered).
+    // This makes sure every order in MongoDB has all 4 required fields: name, phone, lessonIDs, and spaces.
+    if (Array.isArray(body.lessonIDs) && body.spaces === undefined) {
+        body.spaces = body.lessonIDs.length;
+    }
     // Try to save the order in the database.
     try {
         // Print the order details in the terminal so we can see what arrived.
@@ -228,6 +234,39 @@ app.put("/lessons/:_id", async function(request, response) {
         response.status(500).send({ error: "Could not update lesson" });
     }
 }); // End of the PUT /lessons route.
+
+// GET /enrolment/:lessonid
+// Challenge task route: takes a lesson id and returns how many spaces of that lesson
+// have already been purchased across all orders in the "orders" collection.
+app.get("/enrolment/:lessonid", async function(request, response) {
+    // Grab the lesson id from the URL (the part after /enrolment/).
+    const lessonId = request.params.lessonid;
+    // Try to count how many times this lesson was ordered in the database.
+    try {
+        // Pick the "orders" collection from the database.
+        const collection = db.collection("orders");
+        // Find all orders that contain this lessonId inside their "lessonIDs" array.
+        const matchingOrders = await collection.find({ lessonIDs: lessonId }).toArray();
+        // Start a counter at 0 to count every purchased slot for this lesson.
+        let enrolmentCount = 0;
+        // Loop through each matching order.
+        for (const order of matchingOrders) {
+            // Loop through each id inside that order's lessonIDs list.
+            for (const id of order.lessonIDs) {
+                // Every time the id matches our lessonId, add 1 to the counter.
+                if (id === lessonId) {
+                    enrolmentCount = enrolmentCount + 1;
+                }
+            }
+        }
+        // Send the total enrolment number back as JSON.
+        response.send({ lessonId: lessonId, enrolment: enrolmentCount });
+    } catch (err) {
+        // If anything goes wrong with the database, log the error and reply with status 500.
+        console.error("Error getting enrolment:", err);
+        response.status(500).send({ error: "Could not get enrolment" });
+    }
+}); // End of the GET /enrolment/:lessonid route.
 
 // --------------------- 5. CATCH-ALL ERROR ---------------------
 
